@@ -322,5 +322,3 @@ export OMP_DISPLAY_ENV=true
 2. **Bruneau, C. H., & Saad, M. (2006)**  
    "The 2D lid-driven cavity problem revisited"  
    *Computers & Fluids*, 35(3), 326-348
-
-3.
