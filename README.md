@@ -1,7 +1,6 @@
-[Uploading cavity_flow_readme.md…]()
 # Lid-Driven Cavity Flow Simulation
 
-A high-performance OpenMP-parallelized Computational Fluid Dynamics (CFD) solver for the classic lid-driven cavity flow problem using the vorticity-streamfunction formulation.
+A high-performance OpenMP-parallelised Computational Fluid Dynamics (CFD) solver for the classic lid-driven cavity flow problem using the vorticity-streamfunction formulation.
 
 ## Table of Contents
 - [Problem Description](#problem-description)
