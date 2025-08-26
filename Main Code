@@ -1,0 +1,315 @@
+/*
+ * Lid-Driven Cavity Flow Simulation using OpenMP
+ * 
+ * This code solves the 2D incompressible Navier-Stokes equations using
+ * the vorticity-streamfunction formulation with finite differences.
+ * The solution uses Jacobi iteration with under-relaxation for both
+ * vorticity transport and streamfunction Poisson equations.
+ * 
+ * Problem: Square cavity with moving top lid (u=1) and stationary walls
+ * Method: Vorticity-streamfunction formulation with explicit time stepping
+ * Discretization: Central differences on uniform Cartesian grid
+ * Parallelization: OpenMP with thread-safe Jacobi iterations
+ */
+
+#include <stdio.h>
+#include <math.h>
+#include <stdlib.h>
+#include <omp.h>
+
+int main()
+{
+    int i, j, m, n, p;
+    double dx, dy, x, y;
+    
+    // Grid parameters
+    m = 128;  // Number of grid points in x-direction
+    n = 128;  // Number of grid points in y-direction
+    p = (m-2)*(n-2);  // Number of interior points
+    dx = 1.0/(m-1);   // Grid spacing in x-direction
+    dy = 1.0/(n-1);   // Grid spacing in y-direction
+    double beta = (dx/dy);  // Grid aspect ratio
+    double Re = 400.0;      // Reynolds number (Re = UL/ν)
+
+    // Under-relaxation parameters for iterative convergence
+    // Values < 1 improve stability but slow convergence
+    double alpha_psi = 0.7;   // Streamfunction under-relaxation
+    double alpha_omega = 0.7; // Vorticity under-relaxation
+
+    // Main flow field arrays (static for large arrays to avoid stack overflow)
+    static double psi[128][128];      // Streamfunction ψ
+    static double omega[128][128];    // Vorticity ω = ∇×u
+    static double u[128][128];        // x-velocity component
+    static double v[128][128];        // y-velocity component
+    
+    // Previous iteration values for convergence checking
+    static double psi_prev[128][128], omega_prev[128][128];
+
+    // Jacobi scratch buffers for thread-safe parallel updates
+    // These prevent race conditions during parallel iteration
+    static double psi_next[128][128], omega_next[128][128];
+
+    // Convergence monitoring variables
+    double error_psi = 0.0, error_omega = 0.0;  // L2 norm errors
+    int iter = 0;
+    int max_iter = 20000;  // Maximum iteration limit to prevent infinite loops
+
+    // ========================================================================
+    // INITIALIZATION AND BOUNDARY CONDITIONS
+    // ========================================================================
+    
+    // Initialize all fields to zero and set top lid velocity
+    #pragma omp parallel for collapse(2) default(none) shared(m,n,psi,omega,u,v,dy)
+    for (int jj = 0; jj < n; jj++) {
+        for (int ii = 0; ii < m; ii++) {
+            psi[ii][jj] = 0.0;    // Zero streamfunction everywhere initially
+            omega[ii][jj] = 0.0;  // Zero vorticity everywhere initially
+            u[ii][jj] = 0.0;      // Zero x-velocity initially
+            v[ii][jj] = 0.0;      // Zero y-velocity initially
+            
+            // Boundary condition: moving top lid with unit velocity
+            if (jj == n-1) {
+                u[ii][jj] = 1.0;  // Top lid moves with velocity = 1
+            }
+        }
+    }
+
+    // Set initial vorticity boundary conditions using no-slip wall conditions
+    // Vorticity at walls is computed from streamfunction using finite differences
+    #pragma omp parallel for collapse(2) default(none) shared(m,n,psi,omega,dx,dy)
+    for (int jj = 0; jj < n; jj++) {
+        for (int ii = 0; ii < m; ii++) {
+            if (jj == 0) {  // Bottom wall (stationary)
+                omega[ii][jj] = (2.0/(dy*dy))*(psi[ii][jj] - psi[ii][jj+1]);
+            } else if (jj == n-1) {  // Top wall (moving lid)
+                // Additional term (-2.0/dy) accounts for moving lid velocity
+                omega[ii][jj] = (2.0/(dy*dy))*(psi[ii][jj] - psi[ii][jj-1]) - (2.0/dy);
+            } else if (ii == 0) {  // Left wall (stationary)
+                omega[ii][jj] = (2.0/(dx*dx))*(psi[ii][jj] - psi[ii+1][jj]);
+            } else if (ii == m-1) {  // Right wall (stationary)
+                omega[ii][jj] = (2.0/(dx*dx))*(psi[ii][jj] - psi[ii-1][jj]);
+            }
+        }
+    }
+
+    // Open output files for results
+    FILE *fp = fopen("Stream_cavity_flow_Re400.dat", "w");    // Streamfunction data
+    FILE *mp = fopen("Vorticity_cavity_flow_Re400.dat", "w"); // Vorticity data
+    FILE *ip = fopen("u_at_centreline_Re400.dat", "w");       // u-velocity profile
+    FILE *jp = fopen("v_at_centreline_Re400.dat", "w");       // v-velocity profile
+
+    // ========================================================================
+    // MAIN ITERATION LOOP - SOLVE COUPLED EQUATIONS
+    // ========================================================================
+    
+    do {
+        // Save current solution for convergence checking
+        #pragma omp parallel for collapse(2) default(none) shared(m,n,psi,omega,psi_prev,omega_prev)
+        for (int jj = 0; jj < n; jj++) {
+            for (int ii = 0; ii < m; ii++) {
+                psi_prev[ii][jj]   = psi[ii][jj];
+                omega_prev[ii][jj] = omega[ii][jj];
+            }
+        }
+
+        // ====================================================================
+        // STEP 1: SOLVE VORTICITY TRANSPORT EQUATION
+        // ====================================================================
+        // Discretized vorticity equation: ∂ω/∂t + u·∇ω = (1/Re)∇²ω
+        // Using upwind differences for convection terms for numerical stability
+        
+        #pragma omp parallel for collapse(2) default(none) shared(m,n,dx,dy,beta,Re,psi,omega,omega_next,alpha_omega)
+        for (int jn = 1; jn < n-1; jn++) {
+            for (int in = 1; in < m-1; in++) {
+                // Compute streamfunction gradients for velocity components
+                double dx_psi = (psi[in+1][jn] - psi[in-1][jn])/(2.0*dx);  // ∂ψ/∂x
+                double dy_psi = (psi[in][jn+1] - psi[in][jn-1])/(2.0*dy);  // ∂ψ/∂y
+                
+                // Note: u = ∂ψ/∂y, v = -∂ψ/∂x for incompressible flow
+
+                // Jacobi iteration with upwind convection scheme
+                double stencil = (0.5/(1.0 + beta*beta)) * (
+                    // x-direction terms with upwind convection
+                    (1.0 - dy_psi*Re*dx*0.5)*omega[in+1][jn] +
+                    (1.0 + dy_psi*Re*dx*0.5)*omega[in-1][jn] +
+                    // y-direction terms with upwind convection
+                    (beta*beta)*(
+                        (1.0 + dx_psi*Re*dy*0.5)*omega[in][jn+1] +
+                        (1.0 - dx_psi*Re*dy*0.5)*omega[in][jn-1]
+                    )
+                );
+
+                // Apply under-relaxation: new = old + α*(computed - old)
+                double updated = omega[in][jn] + alpha_omega*(stencil - omega[in][jn]);
+                omega_next[in][jn] = updated;
+            }
+        }
+
+        // Copy boundary values (will be updated after streamfunction solve)
+        #pragma omp parallel for default(none) shared(m,n,omega,omega_next)
+        for (int ii = 0; ii < m; ii++) {
+            omega_next[ii][0]     = omega[ii][0];      // Bottom boundary
+            omega_next[ii][n-1]   = omega[ii][n-1];    // Top boundary
+        }
+        #pragma omp parallel for default(none) shared(m,n,omega,omega_next)
+        for (int jj = 0; jj < n; jj++) {
+            omega_next[0][jj]     = omega[0][jj];      // Left boundary
+            omega_next[m-1][jj]   = omega[m-1][jj];    // Right boundary
+        }
+
+        // Update omega array with new values (thread-safe swap)
+        #pragma omp parallel for collapse(2) default(none) shared(m,n,omega,omega_next)
+        for (int jj = 0; jj < n; jj++) {
+            for (int ii = 0; ii < m; ii++) omega[ii][jj] = omega_next[ii][jj];
+        }
+
+        // ====================================================================
+        // STEP 2: SOLVE STREAMFUNCTION POISSON EQUATION
+        // ====================================================================
+        // Poisson equation: ∇²ψ = -ω with Dirichlet boundary conditions (ψ=0)
+        
+        #pragma omp parallel for collapse(2) default(none) shared(m,n,dx,beta,psi,psi_next,omega,alpha_psi)
+        for (int jn = 1; jn < n-1; jn++) {
+            for (int in = 1; in < m-1; in++) {
+                // Standard 5-point stencil for Poisson equation
+                double stencil = (0.5/(1.0 + beta*beta)) *
+                    ( psi[in+1][jn] + psi[in-1][jn]           // x-direction neighbors
+                    + (beta*beta)*(psi[in][jn+1] + psi[in][jn-1])  // y-direction neighbors
+                    + (dx*dx)*omega[in][jn] );                // Source term
+
+                // Apply under-relaxation
+                double updated = psi[in][jn] + alpha_psi*(stencil - psi[in][jn]);
+                psi_next[in][jn] = updated;
+            }
+        }
+
+        // Apply Dirichlet boundary conditions: ψ = 0 on all walls
+        #pragma omp parallel for default(none) shared(m,n,psi_next)
+        for (int ii = 0; ii < m; ii++) {
+            psi_next[ii][0]   = 0.0;    // Bottom wall
+            psi_next[ii][n-1] = 0.0;    // Top wall
+        }
+        #pragma omp parallel for default(none) shared(m,n,psi_next)
+        for (int jj = 0; jj < n; jj++) {
+            psi_next[0][jj]   = 0.0;    // Left wall
+            psi_next[m-1][jj] = 0.0;    // Right wall
+        }
+
+        // Update psi array with new values (thread-safe swap)
+        #pragma omp parallel for collapse(2) default(none) shared(m,n,psi,psi_next)
+        for (int jj = 0; jj < n; jj++) {
+            for (int ii = 0; ii < m; ii++) psi[ii][jj] = psi_next[ii][jj];
+        }
+
+        // ====================================================================
+        // STEP 3: UPDATE VORTICITY BOUNDARY CONDITIONS
+        // ====================================================================
+        // Vorticity at walls computed from no-slip condition using current ψ
+        
+        #pragma omp parallel for default(none) shared(m,psi,omega,dy)
+        for (int ii = 0; ii < m; ii++) {
+            // Bottom wall: ω = 2(ψ_wall - ψ_interior)/dy² (no-slip: u=v=0)
+            omega[ii][0] = (2.0/(dy*dy))*(psi[ii][0] - psi[ii][1]);
+            
+            // Top wall: ω = 2(ψ_wall - ψ_interior)/dy² - 2U_wall/dy (moving lid)
+            omega[ii][n-1] = (2.0/(dy*dy))*(psi[ii][n-1] - psi[ii][n-2]) - (2.0/dy);
+        }
+        #pragma omp parallel for default(none) shared(n,psi,omega,dx,m)
+        for (int jj = 0; jj < n; jj++) {
+            // Left wall: ω = 2(ψ_wall - ψ_interior)/dx² (no-slip: u=v=0)
+            omega[0][jj] = (2.0/(dx*dx))*(psi[0][jj] - psi[1][jj]);
+            
+            // Right wall: ω = 2(ψ_wall - ψ_interior)/dx² (no-slip: u=v=0)
+            omega[m-1][jj] = (2.0/(dx*dx))*(psi[m-1][jj] - psi[m-2][jj]);
+        }
+
+        // ====================================================================
+        // STEP 4: COMPUTE CONVERGENCE ERRORS (L2 NORM)
+        // ====================================================================
+        // Check convergence using L2 norm of changes in interior points
+        
+        double epsi = 0.0, eom = 0.0;
+        #pragma omp parallel for collapse(2) reduction(+:epsi,eom) default(none) shared(m,n,psi,psi_prev,omega,omega_prev)
+        for (int jn = 1; jn < n-1; jn++) {
+            for (int in = 1; in < m-1; in++) {
+                double dp = psi[in][jn]   - psi_prev[in][jn];    // Change in ψ
+                double do_ = omega[in][jn] - omega_prev[in][jn]; // Change in ω
+                epsi += dp*dp;   // Sum of squared differences for ψ
+                eom  += do_*do_; // Sum of squared differences for ω
+            }
+        }
+        
+        // Compute RMS errors normalized by number of interior points
+        error_psi   = sqrt(epsi / (double)((m-2)*(n-2)));
+        error_omega = sqrt(eom  / (double)((m-2)*(n-2)));
+
+        // Print progress every 100 iterations
+        if (iter % 100 == 0) {
+            printf("iter=%d\terror_psi=%.10e\terror_omega=%.10e\n", iter, error_psi, error_omega);
+        }
+        iter++;
+
+    } while ((error_psi > 1.0e-6 || error_omega > 1.0e-6) && iter < max_iter);
+
+    // ========================================================================
+    // POST-PROCESSING: COMPUTE VELOCITY COMPONENTS
+    // ========================================================================
+    // Compute velocities from streamfunction: u = ∂ψ/∂y, v = -∂ψ/∂x
+    
+    #pragma omp parallel for collapse(2) default(none) shared(m,n,psi,u,v,dx,dy)
+    for (int jn = 1; jn < n-1; jn++) {
+        for (int in = 1; in < m-1; in++) {
+            u[in][jn] = (psi[in][jn+1] - psi[in][jn-1])/(2.0*dy);   // u = ∂ψ/∂y
+            v[in][jn] = -(psi[in+1][jn] - psi[in-1][jn])/(2.0*dx);  // v = -∂ψ/∂x
+        }
+    }
+
+    // ========================================================================
+    // OUTPUT RESULTS TO FILES
+    // ========================================================================
+    
+    // Write Tecplot-format headers
+    fprintf(fp, "VARIABLES = X, Y, PSI\n");
+    fprintf(fp, "ZONE I=%d, J=%d, F=POINT\n", m, n);
+    fprintf(mp, "VARIABLES = X, Y, OMEGA\n");
+    fprintf(mp, "ZONE I=%d, J=%d, F=POINT\n", m, n);
+    fprintf(ip, "VARIABLES = Y, U\n");
+    fprintf(ip, "ZONE I=%d, F=POINT\n", n);
+    fprintf(jp, "VARIABLES = X, V\n");
+    fprintf(jp, "ZONE I=%d, F=POINT\n", m);
+
+    // Output full field data (streamfunction and vorticity)
+    for (j = 0; j < n; j++) {
+        y = j*dy;
+        for (i = 0; i < m; i++) {
+            x = i*dx;
+            fprintf(fp, "%lf\t%lf\t%lf\n", x, y, psi[i][j]);    // (x, y, ψ)
+            fprintf(mp, "%lf\t%lf\t%lf\n", x, y, omega[i][j]);  // (x, y, ω)
+        }
+    }
+    
+    // Output centerline velocity profiles for validation
+    // u-velocity along vertical centerline (x = 0.5)
+    for (j = 0; j < n; j++) {
+        y = j*dy;
+        fprintf(ip, "%lf\t%lf\n", y, u[m/2][j]);
+    }
+    
+    // v-velocity along horizontal centerline (y = 0.5)
+    for (i = 0; i < m; i++) {
+        x = i*dx;
+        fprintf(jp, "%lf\t%lf\n", x, v[i][n/2]);
+    }
+
+    // Close all output files
+    fclose(fp);
+    fclose(mp);
+    fclose(ip);
+    fclose(jp);
+
+    printf("\nSimulation completed successfully!\n");
+    printf("Final iteration: %d\n", iter);
+    printf("Final errors: psi=%.10e, omega=%.10e\n", error_psi, error_omega);
+
+    return 0;
+}
