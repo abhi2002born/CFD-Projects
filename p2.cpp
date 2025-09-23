@@ -1,0 +1,666 @@
+#include <bits/stdc++.h>
+#include <algorithm>
+using namespace std;
+
+int grid_no = 0, elem_no = 0, line_elem_no = 0, no_node = 0;
+
+struct Node
+{
+    int id;
+    double x = 0.0, y = 0.0, z = 0.0;
+    vector<int> neighbour_elem_Ids; // Store neighboring elements
+    double T = 0.0;                 // Temperature or boundary condition value
+};
+
+struct Element
+{
+    int id;
+    int type;
+    int bound;
+    double T = 0.0; // Element temperature or boundary condition
+    vector<int> nodeIds;
+    vector<int> neighbour_elem_Ids; // Store neighboring elements
+    double x = 0.0, y = 0.0;        // Coordinates of the element's center
+};
+
+// Trim function to remove leading and trailing spaces
+string trim(const string &str)
+{
+    size_t first = str.find_first_not_of(" \t\r\n");
+    if (first == string::npos)
+        return ""; // no non-whitespace characters
+    size_t last = str.find_last_not_of(" \t\r\n");
+    return str.substr(first, (last - first + 1));
+}
+
+void readGmshFile(const string &filename, vector<Node> &nodes, vector<Element> &elements)
+{
+    ifstream file(filename);
+    if (!file)
+    {
+        cerr << "Cannot open file: " << filename << "\n";
+        return;
+    }
+
+    string line;
+    while (getline(file, line))
+    {
+        line = trim(line); // Trim leading/trailing spaces
+        // Debugging: print each line
+
+        if (line == "$Nodes")
+        {
+            cout << "Reading Nodes...\n";
+            int numNodes;
+            file >> numNodes;
+            no_node = numNodes;
+            nodes.reserve(numNodes); // Preallocate memory for nodes
+            getline(file, line);     // Consume the rest of the line
+
+            for (int i = 0; i < numNodes; ++i)
+            {
+                Node node;
+                int temp;
+                file >> temp >> node.x >> node.y >> node.z;
+                node.id = temp - 1; // Assuming the node IDs in the file are 1-based
+                nodes.push_back(node);
+            }
+            getline(file, line); // Consume the $EndNodes line
+        }
+
+        if (line == "$Elements")
+        {
+            cout << "Reading Elements...\n";
+            int numElements;
+            file >> numElements;
+            grid_no = numElements;
+            elements.reserve(numElements); // Preallocate memory for elements
+            getline(file, line);           // Consume the rest of the line
+
+            for (int i = 0; i < numElements; ++i)
+            {
+                Element elem;
+                int temp;
+                file >> temp >> elem.type >> temp >> elem.bound >> temp;
+
+                elem.id = i; // Element ID (index-based)
+
+                // Determine number of nodes based on element type
+                int numNodes = 0;
+                switch (elem.type)
+                {
+                case 1:
+                    numNodes = 2;
+                    line_elem_no++;
+                    break; // Line   // for counting line elements
+                case 2:
+                    numNodes = 3;
+                    break; // Triangle
+                case 3:
+                    numNodes = 4;
+                    break; // Quad
+                case 4:
+                    numNodes = 4;
+                    break; // Tetrahedron
+                case 5:
+                    numNodes = 8;
+                    break; // Hexahedron
+                default:
+                    cerr << "Unsupported element type: " << elem.type << endl;
+                    break;
+                }
+
+                // Read node IDs for the element
+                for (int j = 0; j < numNodes; ++j)
+                {
+                    int nid;
+                    file >> nid;
+                    nid -= 1; // Adjust for zero-based indexing
+                    elem.nodeIds.push_back(nid);
+                }
+                elements.push_back(elem);
+            }
+            getline(file, line); // Consume the $EndElements line
+        }
+    }
+
+    file.close();
+}
+
+vector<int> findCommonNodes(const Element &e1, const Element &e2)
+{
+    vector<int> common_nodes;
+    for (int node1 : e1.nodeIds)
+    {
+        for (int node2 : e2.nodeIds)
+        {
+            if (node1 == node2)
+            {
+                common_nodes.push_back(node1);
+                break; // Avoid duplicate entries
+            }
+        }
+    }
+    return common_nodes;
+}
+
+vector<int> neigbhour_elmt_nodes(const Element &e1, const Element &e2)
+{
+    vector<int> common_nodes;
+    for (int node1 : e1.nodeIds)
+    {
+        for (int node2 : e2.nodeIds)
+        {
+            if (node1 == node2)
+            {
+                common_nodes.push_back(node1);
+                break; // Avoid duplicate entries
+            }
+        }
+    }
+    return common_nodes;
+}
+
+void Matrix_Vect_Multi(const vector<vector<double>> &A, const vector<double> &x, vector<double> &result, int n, int &mul_count)
+{
+    for (int i = 0; i < n; i++)
+    {
+        result[i] = 0.0;
+        for (int j = 0; j < n; j++)
+        {
+            result[i] += A[i][j] * x[j];
+            mul_count++;
+        }
+    }
+}
+
+void Vect_Subtraction(const vector<double> &a, const vector<double> &b, vector<double> &result, int n)
+{
+    for (int i = 0; i < n; i++)
+    {
+        result[i] = a[i] - b[i];
+    }
+}
+
+void Vect_Add(const vector<double> &a, const vector<double> &b, vector<double> &result, int n)
+{
+    for (int i = 0; i < n; i++)
+    {
+        result[i] = a[i] + b[i];
+    }
+}
+
+void Vect_Scale(const vector<double> &a, double alpha, vector<double> &result, int n, int &mul_count)
+{
+    for (int i = 0; i < n; i++)
+    {
+        result[i] = alpha * a[i];
+        mul_count++;
+    }
+}
+
+double Dot_Product(const vector<double> &a, const vector<double> &b, int n, int &mul_count)
+{
+    double result = 0.0;
+    for (int i = 0; i < n; i++)
+    {
+        result += a[i] * b[i];
+        mul_count++;
+    }
+    return result;
+}
+typedef struct
+{
+    vector<double> residuals;
+} ResidualData;
+
+int main()
+{
+    string filename = "ME670.msh"; // Ensure this path is correct
+
+    vector<Node> N;
+    vector<Element> E;
+    readGmshFile(filename, N, E);
+    elem_no = grid_no - line_elem_no;
+
+    // For debugging purposes: Output the number of nodes and elements read
+    cout << "Total Nodes: " << no_node << endl;
+    cout << "Total Elements: " << grid_no << endl;
+
+    //--------------------------------------------------------------------------------------------------------------------------------
+    //
+    //   Setting Boundary Condition on Boundary elements as all of them are line elements and for center elements, finding neighbor
+    //
+    //--------------------------------------------------------------------------------------------------------------------------------
+
+    vector<vector<double>> T_e(elem_no, vector<double>(elem_no, 0.0)); // Temperature matrix for elements
+    vector<double> B(elem_no, 0.0), T(elem_no, 0.0);                   // Boundary condition array
+
+    for (int i = 0; i < grid_no; ++i)
+    {
+        // Apply boundary conditions based on the element type and boundary condition
+        switch (E[i].bound)
+        {
+        case 1: // Top
+            for (int j = 0; j < E[i].nodeIds.size(); ++j)
+            {
+                N[E[i].nodeIds[j]].T = 100.0; // Set temperature on top boundary to 1
+            }
+            break;
+        case 2: // Left
+        case 3: // Bottom
+        case 4: // Right
+            for (int j = 0; j < E[i].nodeIds.size(); ++j)
+            {
+                N[E[i].nodeIds[j]].T = 0.0; // Set temperature on left/bottom/right boundary to 0
+            }
+            break;
+        case 5: // Center element (finding neighbors)
+            for (int j = 0; j < grid_no; ++j)
+            {
+                if (i != j)
+                { // Don't compare an element with itself
+                    int common = 0;
+                    // Find common nodes between element i and element j
+                    for (int m = 0; m < E[i].nodeIds.size(); ++m)
+                    {
+                        for (int n = 0; n < E[j].nodeIds.size(); ++n)
+                        {
+                            if (E[i].nodeIds[m] == E[j].nodeIds[n])
+                            {
+                                common++;
+                            }
+                        }
+                    }
+                    if (common >= 2)
+                    { // Two elements are neighbors if they share at least two nodes
+                        E[i].neighbour_elem_Ids.push_back(E[j].id);
+                    }
+                }
+            }
+            break;
+        default:
+            break;
+        }
+    }
+
+    // Finding neighbour to every nodes
+    for (int i = 0; i < no_node; ++i)
+    {
+        for (int j = 0; j < grid_no; ++j)
+        {
+            if (find(E[j].nodeIds.begin(), E[j].nodeIds.end(), i) != E[j].nodeIds.end())
+            {
+                N[i].neighbour_elem_Ids.push_back(j);
+            }
+        }
+    }
+
+    //print neighbour element of every node
+    cout<< " Neighbour Element of every node"<<endl<<endl;
+    for (int i = 0; i < N.size(); ++i)
+     {
+         cout << i << "   ";
+         for (int j = 0; j < N[i].neighbour_elem_Ids.size(); ++j)
+         {
+
+             cout << N[i].neighbour_elem_Ids[j] << "  ";
+         }
+         cout << endl;
+     }
+	
+	cout<<endl<<endl;
+    // Calculate coordinates of every element center
+    for (int j = 0; j < grid_no; ++j)
+    {
+
+        // Add up the coordinates of each node in the element
+        for (int nid : E[j].nodeIds)
+        {
+            E[j].x += N[nid].x;
+            E[j].y += N[nid].y;
+        }
+
+        // Average the coordinates to get the center
+        E[j].x /= E[j].nodeIds.size();
+        E[j].y /= E[j].nodeIds.size();
+    }
+
+    // Print coordinates of element centers
+     cout << "Element Center Coordinates:" << endl;
+     for (int j = 0; j < grid_no; ++j) {
+     cout << "Element " << E[j].id << " Center: ("
+    << E[j].x << ", " << E[j].y << ")" << endl;
+    }
+    cout<<endl<<endl;
+    //print neighbour element of every element
+    for (int i = 0; i < E.size(); ++i)
+     {
+         cout << i << "   ";
+         for (int j = 0; j < E[i].neighbour_elem_Ids.size(); ++j)
+         {
+
+             cout << E[i].neighbour_elem_Ids[j] << "  ";
+         }
+         cout << endl;
+     }
+    //-----------------------------------------------------------------------------------------------------------------------------------
+    //
+    //   Now finding T matrix  based on discretisation of laplacian of T  on unstructed mesh ( refer versteeg and malalasekera CFD book)
+    //
+    //-----------------------------------------------------------------------------------------------------------------------------------
+
+    for (int j = 0; j < grid_no; ++j)
+
+    {
+        if (E[j].bound == 5)
+        {
+            for (int i = 0; i < E[j].neighbour_elem_Ids.size(); ++i)
+            {
+                if (E[E[j].neighbour_elem_Ids[i]].bound == 5)
+                {
+
+                    vector<int> common_nodes = findCommonNodes(E[j], E[E[j].neighbour_elem_Ids[i]]);
+                    if (common_nodes.size() != 2)
+                    {
+                        cerr << "Warning: Expected 2 common nodes, got " << common_nodes.size()
+                             << " between elements " << E[j].id << " and " << E[E[j].neighbour_elem_Ids[i]].id << "\n";
+                    }
+
+                    double del_x, del_y, del_X, del_Y, del_Te, del_Tn, e_j, n_j, nml, cross;
+                    // for elements
+                    del_x = E[j].x - E[E[j].neighbour_elem_Ids[i]].x;
+
+                    del_y = E[j].y - E[E[j].neighbour_elem_Ids[i]].y;
+
+                    // for nodes
+                    del_X = N[common_nodes[0]].x - N[common_nodes[1]].x;
+                    del_Y = N[common_nodes[0]].y - N[common_nodes[1]].y;
+                    del_Tn = N[common_nodes[0]].T - N[common_nodes[1]].T;
+
+                    cross = del_x * del_Y - del_X * del_y;
+                    if (cross > 0.0)
+                    {
+                        del_x = del_x * (-1);
+                        del_y = del_y * (-1);
+                    }
+
+                    n_j = nml = sqrt((del_X * del_X) + (del_Y * del_Y));
+                    e_j = sqrt((del_x * del_x) + (del_y * del_y));
+
+                    double temp = ((del_X * del_X) + (del_Y * del_Y)) / (nml * nml);                // n.n
+                    double temp2 = ((del_Y / nml) * (del_x / e_j) + (del_X / nml) * (del_y / e_j)); // n.ee
+                    double temp3 = ((del_X / nml) * (del_x / e_j) + (del_Y / nml) * (del_y / e_j)); // en.ee
+                    double temp4 = sqrt(del_X * del_X + del_Y * del_Y);                             // A
+
+                    T_e[j - line_elem_no][j - line_elem_no] += ((temp * n_j) / (temp2 * e_j)) * (-1.0);
+                    T_e[j - line_elem_no][E[j].neighbour_elem_Ids[i] - line_elem_no] = (temp * n_j) / (temp2 * e_j);
+
+                    B[j] += (temp3 / temp2) * del_Tn;
+                    // cout<<"done"<<endl;
+                }
+
+                else
+                {
+                    vector<int> common_nodes = findCommonNodes(E[j], E[E[j].neighbour_elem_Ids[i]]);
+                    double del_x, del_y, del_X, del_Y, del_T, e_j, n_j, nml, T_avg, cross;
+                    del_x = E[j].x - E[E[j].neighbour_elem_Ids[i]].x;
+
+                    del_y = E[j].y - E[E[j].neighbour_elem_Ids[i]].y;
+
+                    del_X = N[common_nodes[0]].x - N[common_nodes[1]].x;
+
+                    del_Y = N[common_nodes[0]].y - N[common_nodes[1]].y;
+                    del_T = N[common_nodes[0]].T - N[common_nodes[1]].T;
+                    T_avg = (N[common_nodes[0]].T - N[common_nodes[1]].T) / 2.0;
+
+                    cross = del_x * del_Y - del_X * del_y;
+
+                    if (cross > 0.0)
+                    {
+                        del_x = del_x * (-1);
+                        del_y = del_y * (-1);
+                    }
+
+                    n_j = nml = sqrt((del_X * del_X) + (del_Y * del_Y));
+                    e_j = sqrt((del_x * del_x) + (del_y * del_y));
+
+                    double temp = ((del_X * del_X) + (del_Y * del_Y)) / (nml * nml);                // n.n
+                    double temp2 = ((del_Y / nml) * (del_x / e_j) + (del_X / nml) * (del_y / e_j)); // n.ee
+                    double temp3 = ((del_X / nml) * (del_x / e_j) + (del_Y / nml) * (del_y / e_j)); // en.ee
+
+                    T_e[j - line_elem_no][j - line_elem_no] += ((temp * n_j) / (temp2 * e_j)) * (-1.0);
+                    B[j] += (((temp3 / temp2) * del_T) + (((temp * n_j) / (temp2 * e_j)) * T_avg));
+                }
+            }
+        }
+    }
+
+    ofstream outfile("T_matrix.txt");
+    if (!outfile.is_open())
+    {
+        std::cerr << "Error opening file for writing T_e matrix." << std::endl;
+        return 1;
+    }
+
+    ofstream outfile1("T_e_matrix_sparsity.txt");
+    if (!outfile1.is_open())
+    {
+        std::cerr << "Error opening file for writing T_e matrix." << std::endl;
+        return 1;
+    }
+
+    outfile << "\nTemperature_Matrix_T_e:\n";
+    for (int i = 0; i < elem_no; ++i)
+    {
+        for (int j = 0; j < elem_no; ++j)
+        {
+            outfile << fixed << setprecision(4) << T_e[i][j] << "\t";
+        }
+        outfile << "\n";
+    }
+    outfile.close();
+
+    for (int i = 0; i < elem_no; ++i)
+    {
+        for (int j = 0; j < elem_no; ++j)
+        {
+            if (T_e[i][j] != 0.0)
+            {
+                outfile1 << i + 1 << " " << j + 1 << " " << T_e[i][j] << "\n"; // MATLAB is 1-based
+            }
+        }
+    }
+    outfile1.close();
+
+    cout << "T matrix written to T_matrix.txt\n";
+
+    //-----------------------------------------------------------------------------------------------------------------------------------
+    //
+    //                                                Solving Ax=B using CG method
+    //
+    //-----------------------------------------------------------------------------------------------------------------------------------
+
+    ofstream file("output.txt");
+    if (!file)
+    {
+        cerr << "Error opening file.\n";
+        return 1;
+    }
+
+    double Tol = 1e-6;
+    int Max_Iter = 5000, n = elem_no;
+
+    vector<double> r(n), s(n), T_es(n), temp(n);
+    double alpha, beta, rs_Old, rs_new;
+    int k = 0, mul_count = 0, div_count = 0;
+    ResidualData residual_data;
+    residual_data.residuals.resize(Max_Iter);
+
+    fill(T.begin(), T.end(), 0.0);
+    Matrix_Vect_Multi(T_e, T, r, n, mul_count);
+    Vect_Subtraction(B, r, r, n);
+    copy(r.begin(), r.end(), s.begin());
+    rs_Old = Dot_Product(r, r, n, mul_count);
+
+    while (k < Max_Iter)
+    {
+        Matrix_Vect_Multi(T_e, s, T_es, n, mul_count);
+        double dot_sT_es = Dot_Product(s, T_es, n, mul_count);
+        if (dot_sT_es == 0.0)
+            break;
+
+        alpha = rs_Old / dot_sT_es;
+        div_count++;
+
+        Vect_Scale(s, alpha, temp, n, mul_count);
+        Vect_Add(T, temp, T, n);
+        Vect_Scale(T_es, alpha, temp, n, mul_count);
+        Vect_Subtraction(r, temp, r, n);
+
+        rs_new = Dot_Product(r, r, n, mul_count);
+        residual_data.residuals[k] = sqrt(rs_new);
+
+        if (sqrt(rs_new) <= Tol)
+        {
+            cout << "Converged in " << k + 1 << " iteration(s).\n";
+            file << "Converged in " << k + 1 << " iteration(s).\n";
+            break;
+        }
+
+        beta = rs_new / rs_Old;
+        div_count++;
+
+        Vect_Scale(s, beta, s, n, mul_count);
+        Vect_Add(r, s, s, n);
+        rs_Old = rs_new;
+        k++;
+
+        //recalculate_nodes
+        
+        for (int i = 0; i < no_node; ++i)
+        {
+            for (int j = 0; j <  N[i].neighbour_elem_Ids.size(); ++j)
+            {
+                   N[i].T += E[N[i].neighbour_elem_Ids[j]].T;
+            }
+
+            N[i].T /= N[i].neighbour_elem_Ids.size();
+        }
+
+
+        for (int j = 0; j < grid_no; ++j)
+
+        {
+            if (E[j].bound == 5)
+            {
+                for (int i = 0; i < E[j].neighbour_elem_Ids.size(); ++i)
+                {
+                    if (E[E[j].neighbour_elem_Ids[i]].bound == 5)
+                    {
+
+                        vector<int> common_nodes = findCommonNodes(E[j], E[E[j].neighbour_elem_Ids[i]]);
+                        if (common_nodes.size() != 2)
+                        {
+                            cerr << "Warning: Expected 2 common nodes, got " << common_nodes.size()
+                                 << " between elements " << E[j].id << " and " << E[E[j].neighbour_elem_Ids[i]].id << "\n";
+                        }
+
+                        double del_x, del_y, del_X, del_Y, del_Te, del_Tn, e_j, n_j, nml, cross;
+                        // for elements
+                        del_x = E[j].x - E[E[j].neighbour_elem_Ids[i]].x;
+
+                        del_y = E[j].y - E[E[j].neighbour_elem_Ids[i]].y;
+
+                        // for nodes
+                        del_X = N[common_nodes[0]].x - N[common_nodes[1]].x;
+                        del_Y = N[common_nodes[0]].y - N[common_nodes[1]].y;
+                        del_Tn = N[common_nodes[0]].T - N[common_nodes[1]].T;
+
+                        cross = del_x * del_Y - del_X * del_y;
+                        if (cross > 0.0)
+                        {
+                            del_x = del_x * (-1);
+                            del_y = del_y * (-1);
+                        }
+
+                        n_j = nml = sqrt((del_X * del_X) + (del_Y * del_Y));
+                        e_j = sqrt((del_x * del_x) + (del_y * del_y));
+
+                        double temp = ((del_X * del_X) + (del_Y * del_Y)) / (nml * nml);                // n.n
+                        double temp2 = ((del_Y / nml) * (del_x / e_j) + (del_X / nml) * (del_y / e_j)); // n.ee
+                        double temp3 = ((del_X / nml) * (del_x / e_j) + (del_Y / nml) * (del_y / e_j)); // en.ee
+                        double temp4 = sqrt(del_X * del_X + del_Y * del_Y);                             // A
+
+                        B[j] += (temp3 / temp2) * del_Tn;
+                        // cout<<"done"<<endl;
+                    }
+
+                    else
+                    {
+                        vector<int> common_nodes = findCommonNodes(E[j], E[E[j].neighbour_elem_Ids[i]]);
+                        double del_x, del_y, del_X, del_Y, del_T, e_j, n_j, nml, T_avg, cross;
+                        del_x = E[j].x - E[E[j].neighbour_elem_Ids[i]].x;
+
+                        del_y = E[j].y - E[E[j].neighbour_elem_Ids[i]].y;
+
+                        del_X = N[common_nodes[0]].x - N[common_nodes[1]].x;
+
+                        del_Y = N[common_nodes[0]].y - N[common_nodes[1]].y;
+                        del_T = N[common_nodes[0]].T - N[common_nodes[1]].T;
+                        T_avg = (N[common_nodes[0]].T - N[common_nodes[1]].T) / 2.0;
+
+                        cross = del_x * del_Y - del_X * del_y;
+
+                        if (cross > 0.0)
+                        {
+                            del_x = del_x * (-1);
+                            del_y = del_y * (-1);
+                        }
+
+                        n_j = nml = sqrt((del_X * del_X) + (del_Y * del_Y));
+                        e_j = sqrt((del_x * del_x) + (del_y * del_y));
+
+                        double temp = ((del_X * del_X) + (del_Y * del_Y)) / (nml * nml);                // n.n
+                        double temp2 = ((del_Y / nml) * (del_x / e_j) + (del_X / nml) * (del_y / e_j)); // n.ee
+                        double temp3 = ((del_X / nml) * (del_x / e_j) + (del_Y / nml) * (del_y / e_j)); // en.ee
+
+                        B[j] += (((temp3 / temp2) * del_T) + (((temp * n_j) / (temp2 * e_j)) * T_avg));
+                    }
+                }
+            }
+        }
+    }
+
+    if (k >= Max_Iter)
+    {
+        cout << "Not Converged within " << Max_Iter << " iterations.\n";
+        file << "Not Converged within " << Max_Iter << " iterations.\n";
+        exit(1);
+    }
+
+    cout << "Multiplications: " << mul_count << ", Divisions: " << div_count << "\n";
+    file << "Multiplications: " << mul_count << ", Divisions: " << div_count << "\n";
+
+    ofstream file1("iterationVSresidual.txt");
+    if (!file1)
+    {
+        cerr << "Error opening file.\n";
+        return 1;
+    }
+    for (int i = 0; i <= k; i++)
+    {
+        file1 << i + 1 << "\t\t " << residual_data.residuals[i] << "\n";
+    }
+    file1.close();
+
+    file << "\nFinal solution x:\n";
+    for (int i = 0; i < elem_no; i++)
+    {
+        file << T[i] << "\n";
+    }
+
+    file.close();
+
+    return 0;
+}
