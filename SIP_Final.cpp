@@ -1,0 +1,464 @@
+#include <bits/stdc++.h>
+#include <chrono>
+
+using namespace std;
+using namespace std::chrono;
+
+#define E 1e-5 // Convergence tolerance
+#define m 4  // Grid size (128x128)
+
+int n = m * m; // Problem size
+
+vector<double> Lw(n, 0.0), Ls(n, 0.0), Lp(n, 0.0), Un(n, 0.0), Ue(n, 0.0), Aw(n, 0.0), As(n, 0.0), Ap(n, 0.0), An(n, 0.0), Ae(n, 0.0);
+void Update_Matrix_A_array()
+{
+    for (int i = 0; i < m; i++)
+    {
+        for (int j = 0; j < m; j++)
+
+        {
+            int idx = i * m + j;
+            Ap[idx] = 4.0;
+
+            if (j > 0)
+                Aw[idx] -= 1.0; // West neighbor
+            if (j < m - 1)
+                Ae[idx] -= 1.0; // East neighbor
+            if (i > 0)
+                As[idx] -= 1.0; // South neighbor
+            if (i < m - 1)
+                An[idx] -= 1.0; // North neighbor
+
+            // Adjust boundary conditions
+            if (i == 0 || i == m - 1)
+                Ap[idx] += 1.0;
+            if (j == 0 || j == m - 1)
+                Ap[idx] += 1.0;
+        }
+    }
+}
+// Function to compute matrix-vector product for 2D Laplacian operator using FVM discreatisation
+void Matrix_A_Vect_Multi(const vector<double> &x, vector<double> &result)
+{
+    int nx = m;
+    result.assign(nx * nx, 0.0);
+
+    for (int i = 0; i < nx; i++)
+    {
+        for (int j = 0; j < nx; j++)
+        {
+            int idx = i * nx + j;
+            double val = 4.0 * x[idx];
+
+            if (j > 0)
+                val -= x[idx - 1]; // West neighbor
+            if (j < nx - 1)
+                val -= x[idx + 1]; // East neighbor
+            if (i > 0)
+                val -= x[idx - nx]; // South neighbor
+            if (i < nx - 1)
+                val -= x[idx + nx]; // North neighbor
+
+            // Adjust boundary conditions
+            if (i == 0 || i == nx - 1)
+                val += x[idx];
+            if (j == 0 || j == nx - 1)
+                val += x[idx];
+
+            result[idx] = val;
+        }
+    }
+}
+
+// Function to compute matrix-vector product for 2D Laplacian operator
+// Function to compute matrix-vector product for 2D Laplacian operator
+void Matrix_P_inv_Vect_Multi(const vector<double> &x, vector<double> &result)
+{
+    // Solving LU(result) = x
+    // Forward Substitution LR=X
+    vector<double> R(n, 0.0);
+    for (int i = 0; i < n; i++)
+    {
+        if (i == 0)
+        {
+            R[i] = (x[i]) / Lp[i];
+        }
+
+        if (i > 0 && i < m)
+        {
+            R[i] = (x[i] - Ls[i] * R[i - 1]) / Lp[i];
+        }
+
+        if (i >= m)
+        {
+            R[i] = (x[i] - Ls[i] * R[i - 1] - Lw[i] * R[i - m]) / Lp[i];
+        }
+    }
+
+    // Backward Substitution LR=X
+    for (int i = n - 1; i >= 0; i--)
+    {
+        if (i == n - 1)
+        {
+            result[i] = (R[i]);
+        }
+
+        if (i < n - 1 && i > n - m - 1)
+        {
+            result[i] = (R[i] - Un[i] * result[i + 1]);
+        }
+
+        if (i <= n - m - 1)
+        {
+            result[i] = (R[i] - Un[i] * result[i + 1] - Ue[i] * result[i + m]);
+        }
+    }
+}
+
+// Function to compute dot product of two vectors
+double Dot_Product(const vector<double> &a, const vector<double> &b)
+{
+    double result = 0.0;
+    for (size_t i = 0; i < a.size(); i++)
+    {
+        result += a[i] * b[i];
+    }
+    return result;
+}
+
+// Function to compute 2-norm of a vector
+double norm_2(const vector<double> &a)
+{
+    double result = 0.0;
+    for (size_t i = 0; i < a.size(); i++)
+    {
+        result += a[i] * a[i];
+    }
+    return sqrt(result);
+}
+
+// Function to compute analytical solution
+double analytical_solution(double x, double y, int terms)
+{
+    double T = 0.0;
+    for (int n = 1; n <= terms; n++)
+    {
+        double coef = (2.0 / M_PI) * ((pow(-1.0, n + 1) + 1.0) / n);
+        T += coef * sin(n * M_PI * x) * sinh(n * M_PI * y) / sinh(n * M_PI);
+    }
+    return T;
+}
+
+// Function to save results to file
+void save_results(const vector<double> &T, const string &filename)
+{
+    ofstream file(filename);
+    file << "VARIABLES = X, Y, T\n";
+    file << "ZONE I=" << m << ", J=" << m << ", F=POINT\n";
+
+    double dx = 1.0 / m;
+    double dy = 1.0 / m;
+
+    for (int j = 0; j < m; j++)
+    {
+        double y = (j + 0.5) * dy;
+        for (int i = 0; i < m; i++)
+        {
+            double x = (i + 0.5) * dx;
+            int idx = i + j * m;
+            file << fixed << setprecision(9) << x << "\t" << y << "\t" << T[idx] << "\n";
+        }
+    }
+    file.close();
+}
+
+// Function to save temperature along centerlines
+void save_centerlines(const vector<double> &T, const string &h_filename, const string &v_filename)
+{
+    ofstream h_file(h_filename);
+    ofstream v_file(v_filename);
+
+    double dx = 1.0 / m;
+    double dy = 1.0 / m;
+
+    h_file << "VARIABLES = Y, T\n";
+    h_file << "ZONE I=" << m << ", F=POINT\n";
+
+    v_file << "VARIABLES = X, T\n";
+    v_file << "ZONE I=" << m << ", F=POINT\n";
+
+    // Horizontal centerline (x = 0.5)
+    for (int j = 0; j < m; j++)
+    {
+        double y = (j + 0.5) * dy;
+        int idx = m / 2 + j * m;
+        h_file << fixed << setprecision(9) << y << "\t" << T[idx] << "\n";
+    }
+
+    // Vertical centerline (y = 0.5)
+    for (int i = 0; i < m; i++)
+    {
+        double x = (i + 0.5) * dx;
+        int idx = i + (m / 2) * m;
+        v_file << fixed << setprecision(9) << x << "\t" << T[idx] << "\n";
+    }
+
+    h_file.close();
+    v_file.close();
+}
+
+int main()
+{   
+    double a = 0.73;
+
+    auto start = high_resolution_clock::now(); // Start timer
+    // Vectors for CG method
+    vector<double> r(n, 0.0), d(n, 0.0), b(n, 0.0), temp(n, 0.0), temp_2(n, 0.0), x(n, 0.0);
+    vector<double> residual_history;
+
+    // Set up right-hand side vector b with boundary conditions
+    // T=0 at left, right, and bottom boundaries
+    // T=1 at top boundary
+    double dx = 1.0 / m;
+    double dy = 1.0 / m;
+
+    // Initialize b with boundary conditions
+    for (int i = 0; i < m; i++)
+    {
+        for (int j = 0; j < m; j++)
+        {
+            int idx = i + j * m;
+
+            // Interior points
+            b[idx] = 0.0;
+
+            // Apply boundary conditions to b
+            // Top boundary (T=1)
+            if (j == m - 1)
+            {
+                b[idx] = 2.0; // Contribution from top boundary
+            }
+        }
+    }
+    Update_Matrix_A_array();
+    // Initial guess for x is all zeros
+    for (int i = 0; i < n; i++)
+    {
+        x[i] = 0.0;
+    }
+
+    ofstream file("text_2.dat");
+    
+
+    // Initialize Pre-Conditioner Matrix (ILU)
+    for (int i = 0; i < n; i++)
+    {
+        // Lw Calculation
+        if (i >= 0 && i <= m - 1)
+        {
+            Lw[i] = 0.0;
+        }
+        else if (i >= m && i < n)
+        {
+            Lw[i] = Aw[i] / (1 + a * Un[i - m]);
+        }
+
+        // Ls Calculation
+        if (i == 0)
+        {
+            Ls[i] = 0.0;
+        }
+        else if (i >= 1 && i < n)
+        {
+            Ls[i] = As[i] / (1 + a * Ue[i - 1]);
+        }
+
+        // Lp Calculation
+        if (i == 0)
+        {
+            Lp[i] = Ap[i];
+        }
+        else if (i >= 1 && i <= m - 1)
+        {
+            Lp[i] = Ap[i] - Ls[i] * (a * Ue[i - 1] - Un[i - 1]);
+        }
+        else if (i >= m && i < n)
+        {
+            Lp[i] = Ap[i] - Ls[i] * (a * Ue[i - 1] - Un[i - 1]) + Lw[i] * (a * Un[i - m] - Ue[i - m]);
+        }
+
+        // Un Calculation
+        if (i >= 0 && i < n - 2)
+        {   
+            if(i >= m && i < n) Un[i] = (An[i] - (a * Lw[i] * Un[i - m])) / Lp[i];
+
+            if(i < m ) Un[i] = (An[i]) / Lp[i];
+        }
+        else if (i == n - 1)
+        {
+            Un[i] = 0.0;
+        }
+
+        // Ue Calculation
+        if (i >= 0 && i < n - m - 1)
+        {
+            if(i >= 1) Ue[i] = (Ae[i] - (a * Ls[i] * Ue[i - 1])) / Lp[i];
+
+            if(i == 0 ) Ue[i] = Ae[i] / Lp[i];
+
+            
+        }
+        else if (i >= n - m && i < n)
+        {
+            Ue[i] = 0.0;
+        }
+    }
+    //Print the matrices
+    for (int i = 0; i < n; i++)
+    {
+        file << i+1 <<fixed<< "       " << Lw[i] << "       " << Ls[i] << "       " << Lp[i] << "       " << Un[i] << "       " << Ue[i] << endl;
+    }
+
+    // Initialize residual r = b - Ax
+    Matrix_A_Vect_Multi(x, temp);
+    for (int i = 0; i < n; i++)
+    {
+        r[i] = b[i] - temp[i];
+    }
+
+    Matrix_P_inv_Vect_Multi(r, temp_2);
+    for (int i = 0; i < n; i++)
+    {
+        d[i] = temp_2[i]; // Initial search direction
+    }
+
+    double rs_old = Dot_Product(r, temp_2);
+    double rn_old = norm_2(r);
+    residual_history.push_back(rn_old);
+
+    // CG iteration
+    int iter = 0;
+    int max_iter = 10000;
+    double alpha = 0.0, beta = 0.0, rs_new = 0.0, rn_new = 0.0;
+
+    cout << "Starting Conjugate Gradient iterations..." << endl;
+    cout << "Iteration\tResidual" << endl;
+    cout << iter << "\t\t" << rn_old << endl;
+
+    while (rn_old > E && iter < max_iter)
+    {
+        iter++;
+
+        // Compute alpha
+        Matrix_A_Vect_Multi(d, temp);
+        alpha = rs_old / Dot_Product(d, temp);
+
+        // Update solution
+        for (int i = 0; i < n; i++)
+        {
+            x[i] += alpha * d[i];
+        }
+
+        // Update residual
+        if (iter % 50 == 0)
+        {
+            // Recompute residual periodically to avoid round-off error accumulation
+            Matrix_A_Vect_Multi(x, temp);
+            for (int i = 0; i < n; i++)
+            {
+                r[i] = b[i] - temp[i];
+            }
+        }
+        else
+        {
+            // Standard residual update
+            for (int i = 0; i < n; i++)
+            {
+                r[i] -= alpha * temp[i];
+            }
+        }
+
+        Matrix_P_inv_Vect_Multi(r, temp_2);
+
+        // Compute new residual norm
+        rs_new = Dot_Product(r, temp_2);
+        rn_new = norm_2(r);
+        residual_history.push_back(rn_new);
+
+        // Compute beta
+        beta = rs_new / rs_old;
+        rs_old = rs_new;
+
+        // Update search direction
+        for (int i = 0; i < n; i++)
+        {
+            d[i] = r[i] + beta * d[i];
+        }
+
+        rn_old = rn_new;
+
+        if (iter % 50 == 0 || rn_new <= E)
+        {
+            cout << iter << "\t\t" << rn_new << endl;
+        }
+    }
+
+   
+
+    cout << "CG converged in " << iter << " iterations." << endl;
+    //cout << "Final residual: " << rn_new << endl;
+
+    // Save results
+    save_results(x, "temperature_SIP_PCG.dat");
+    save_centerlines(x, "T_centerline_H_SIP.dat", "T_centerline_V_SIP.dat");
+
+    // Compute analytical solution for comparison
+    vector<double> T_analytical(n, 0.0);
+    for (int j = 0; j < m; j++)
+    {
+        double y = (j + 0.5) * dy;
+        for (int i = 0; i < m; i++)
+        {
+            double x_pos = (i + 0.5) * dx;
+            int idx = i + j * m;
+            T_analytical[idx] = analytical_solution(x_pos, y, 100); // Use 100 terms for summation
+        }
+    }
+
+    // Save analytical solution
+    save_results(T_analytical, "temperature_analytical_SIP.dat");
+
+    // Compute error between numerical and analytical solutions
+    double max_error = 0.0;
+    int x_index, y_index;
+    for (int i = 0; i < n; i++)
+    {
+        double error = fabs(x[i] - T_analytical[i]);
+        if (error > max_error)
+        {
+            max_error = error;
+            x_index = i / m;
+            y_index = i % m;
+        }
+    }
+
+   // cout << "Maximum error between numerical and analytical solutions: " << max_error << " at i =" << x_index << " and j =" << y_index << endl;
+
+    // Save residual history
+    ofstream res_file("residual_history_SIP.dat");
+    res_file << "VARIABLES = Iteration, Residual\n";
+    res_file << "ZONE I=" << residual_history.size() << ", F=POINT\n";
+    for (size_t i = 0; i < residual_history.size(); i++)
+    {
+        res_file << i << "\t" << residual_history[i] << "\n";
+    }
+    res_file.close();
+
+    auto stop = high_resolution_clock::now();
+
+    auto duration = duration_cast<milliseconds>(stop - start);
+    cout << "Execution time: " << duration.count() << " ms" << endl;
+
+    return 0;
+}
+
