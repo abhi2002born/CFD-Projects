@@ -1,0 +1,526 @@
+#include <bits/stdc++.h>
+using namespace std;
+
+#define E 1e-5
+#define m 100
+#define Re 400
+
+double findMax(double mat[m + 2][m + 2])
+{
+    double maxElement = mat[1][1];
+    for (int i = 1; i <= m; i++)
+    {
+        for (int j = 1; j <= m; j++)
+        {
+            if (fabs(mat[i][j]) > maxElement)
+            {
+                maxElement = fabs(mat[i][j]);
+            }
+        }
+    }
+    return maxElement;
+}
+
+int main()
+{
+    // 0 and m+1 index are for ghost point
+    // 0 and 1 is east and west faces for U. Similarly 0 and 1 is north and south face for V
+    // cell centre velocity
+    double u[m + 2][m + 2], uc[m + 2][m + 2], uo[m + 2][m + 2], v[m + 2][m + 2], vc[m + 2][m + 2], vo[m + 2][m + 2], p[m + 2][m + 2], pc[m + 2][m + 2];
+    // cell face velocity
+    double U[m + 2][m + 2][2], Uc[m + 2][m + 2][2], Uo[m + 2][m + 2][2], V[m + 2][m + 2][2], Vc[m + 2][m + 2][2], Vo[m + 2][m + 2][2], err[m + 2][m + 2];
+    int t = 0;
+    double dt = 0.0001;
+
+    // Discreatization
+    double dx = (1.0 / (m));
+    double dy = (1.0 / (m));
+    double norm_inf = 1.0;
+
+    // initializing and initial condition
+    for (int i = 0; i <= m + 1; i++)
+    {
+        for (int j = 0; j <= m + 1; j++)
+        {
+            u[i][j] = 0.0;
+            v[i][j] = 0.0;
+            uc[i][j] = 0.0;
+            vc[i][j] = 0.0;
+            uo[i][j] = 0.0;
+            vo[i][j] = 0.0;
+
+            U[i][j][0] = 0.0;
+            U[i][j][1] = 0.0;
+            Uo[i][j][0] = 0.0;
+            Uo[i][j][1] = 0.0;
+            Uc[i][j][0] = 0.0;
+            Uc[i][j][1] = 0.0;
+            V[i][j][0] = 0.0;
+            V[i][j][1] = 0.0;
+            Vo[i][j][0] = 0.0;
+            Vo[i][j][1] = 0.0;
+            Vc[i][j][0] = 0.0;
+            Vc[i][j][1] = 0.0;
+
+            p[i][j] = 0.0;
+            pc[i][j] = 0.0;
+        }
+    }
+
+    // ----------------------------
+    // Boundary Conditions (initial)
+    // ----------------------------
+    for (int i = 1; i <= m; i++)
+    {
+
+         // Top boundary (moving lid, u=1): use mirror condition: u[i][m+1] = 2 - u[i][m]
+        uo[i][m + 1] = uc[i][m + 1] = 2.0 - uc[i][m];
+        vo[i][m + 1] = vc[i][m + 1] = -vc[i][m];
+        pc[i][m + 1] = pc[i][m];
+
+        // Bottom boundary (stationary): u=0, v=0 using mirror condition
+        uo[i][0] = uc[i][0] = -uc[i][1];
+        vo[i][0] = vc[i][0] = -uc[i][1];
+        pc[i][0] = pc[i][1];
+
+        // Right boundary: enforce u = 0 by mirror condition: u[0][i] = -u[1][i]
+        uo[0][i] = uc[0][i] = -uc[1][i];
+        vo[0][i] = vc[0][i] = -vc[1][i];
+        pc[0][i] = pc[1][i];
+
+        // Left boundary: enforce u = 0 by mirror condition; note correction: use index i not 1
+        uo[m + 1][i] = uc[m + 1][i] = -uc[m][1];
+        vo[m + 1][i] = vc[m + 1][i] = -vc[m][1];
+        pc[m + 1][i] = pc[m][i];
+    }
+
+    // Open file for output (only once, outside the time loop)
+    ofstream fp1("All_Results_1.dat");
+    ofstream fp2("u_centreline.dat");
+    ofstream fp3("v_centreline.dat");
+    ofstream fp4("temp.dat");
+
+    // ----------------------------
+    // Time loop for fractional time stepping
+    // ----------------------------
+    while (t <= 60000)
+    {
+
+        // ---- u_star iteration ----
+        do
+        {
+            if (t == 0)
+            {
+                // First iteration uses initial conditio
+                for (int i = 1; i <= m; i++)
+                {
+                    for (int j = 1; j <= m; j++)
+                    {
+                        // Compute discretization terms.
+                        double a1, b1, c1, d1, e1, F, Cno, Cn, D, u_temp[m + 1][m + 1];
+
+                        D = (1.0 / Re) * (((uc[i - 1][j] + uc[i + 1][j] - (2.0 * uc[i][j])) / (dx * dx)) + ((uc[i][j - 1] + uc[i][j + 1] - (2.0 * uc[i][j])) / (dy * dy)));
+
+                        Cn = ((((Uc[i][j][0] * ((uc[i][j] + uc[i + 1][j]) / 2.0))) - ((Uc[i][j][1] * ((uc[i][j] + uc[i - 1][j]) / 2.0)))) / dx) +
+                             ((((Vc[i][j][0] * ((uc[i][j] + uc[i][j + 1]) / 2.0))) - ((Vc[i][j][1] * ((uc[i][j] + uc[i][j - 1]) / 2.0)))) / dy);
+
+                        a1 = ((1.0 / dt) + ((2.0 / (pow(dx, 2) * Re * 2)) + (2.0 / (pow(dy, 2) * 2 * Re))));
+                        b1 = (-1.0 / (pow(dx, 2) * Re * 2));
+                        c1 = (-1.0 / (pow(dx, 2) * Re * 2));
+                        d1 = (-1.0 / (pow(dy, 2) * Re * 2));
+                        e1 = (-1.0 / (pow(dy, 2) * Re * 2));
+
+                        F = ((D - 2.0 * Cn) / 2) + (uc[i][j] / dt);
+
+                        // Update u at (i,j)
+                        u_temp[i][j] = u[i][j];
+                        u[i][j] = (F - u[i + 1][j] * b1 - u[i - 1][j] * c1 - u[i][j + 1] * d1 - u[i][j - 1] * e1) / a1;
+
+                        // Compute error at (i,j)
+                        err[i][j] = fabs(u[i][j] - u_temp[i][j]);
+                    }
+                } // End loop over interior cells
+            }
+
+            else
+            {
+
+                // Update ghost cell values for u at every iteration.
+                for (int i = 1; i <= m; i++)
+                {
+
+                    // top boundary
+                    u[i][m + 1] = 2.0 - u[i][m];
+                    v[i][m + 1] = -v[i][m];
+                    // bottom boundary
+                    u[i][0] = -u[i][1];
+                    v[i][0] = -v[i][1];
+
+                    // right boundary
+                    u[0][i] = -u[1][i];
+                    v[0][i] = -v[1][i];
+
+                    // left boundary
+                    u[m + 1][i] = -u[m][i];
+                    v[m + 1][i] = -v[m][i];
+                }
+
+                for (int i = 1; i <= m; i++)
+                {
+                    for (int j = 1; j <= m; j++)
+                    {
+                        // Compute discretization terms.
+                        double a1, b1, c1, d1, e1, F, Cno, Cn, D, u_temp[m + 1][m + 1];
+
+                        D = (1.0 / Re) * (((uc[i - 1][j] + uc[i + 1][j] - (2.0 * uc[i][j])) / (dx * dx)) + ((uc[i][j - 1] + uc[i][j + 1] - (2.0 * uc[i][j])) / (dy * dy)));
+
+                        Cn = ((((Uc[i][j][0] * ((uc[i][j] + uc[i + 1][j]) / 2.0))) - ((Uc[i][j][1] * ((uc[i][j] + uc[i - 1][j]) / 2.0)))) / dx) +
+                             ((((Vc[i][j][0] * ((uc[i][j] + uc[i][j + 1]) / 2.0))) - ((Vc[i][j][1] * ((uc[i][j] + uc[i][j - 1]) / 2.0)))) / dy);
+
+                        Cno = ((((Uo[i][j][0] * ((uo[i][j] + uo[i + 1][j]) / 2.0))) - ((Uo[i][j][1] * ((uo[i][j] + uo[i - 1][j]) / 2.0)))) / dx) +
+                              ((((Vo[i][j][0] * ((uo[i][j] + uo[i][j + 1]) / 2.0))) - ((Vo[i][j][1] * ((uo[i][j] + uo[i][j - 1]) / 2.0)))) / dy);
+
+                        a1 = ((1.0 / dt) + ((2.0 / (pow(dx, 2) * Re * 2)) + (2.0 / (pow(dy, 2) * 2 * Re))));
+                        b1 = (-1.0 / (pow(dx, 2) * Re * 2));
+                        c1 = (-1.0 / (pow(dx, 2) * Re * 2));
+                        d1 = (-1.0 / (pow(dy, 2) * Re * 2));
+                        e1 = (-1.0 / (pow(dy, 2) * Re * 2));
+
+                        F = ((D - (3.0 * Cn) + Cno) / 2) + (uc[i][j] / dt);
+                        // Update u at (i,j)
+                        u_temp[i][j] = u[i][j];
+                        u[i][j] = (F - u[i + 1][j] * b1 - u[i - 1][j] * c1 - u[i][j + 1] * d1 - u[i][j - 1] * e1) / a1;
+
+                        // Compute error at (i,j)
+                        err[i][j] = fabs(u[i][j] - u_temp[i][j]);
+                    }
+                }
+            }
+
+            // Update norm_inf
+            norm_inf = findMax(err);
+
+            // cout<<"check_u"<<endl;
+
+        } while (norm_inf >= E);
+
+
+
+        // ---- v_star iteration ----
+        do
+        {
+            if (t == 0)
+            {
+                // Loop over interior cells and update u
+                for (int i = 1; i <= m; i++)
+                {
+                    for (int j = 1; j <= m; j++)
+                    {
+                        // Compute discretization terms.
+                        double a1, b1, c1, d1, e1, F, Cno, Cn, D, v_temp[m + 1][m + 1];
+
+                        D = (1.0 / Re) * (((vc[i - 1][j] + vc[i + 1][j] - (2.0 * vc[i][j])) / (dx * dx)) + ((vc[i][j - 1] + vc[i][j + 1] - (2.0 * vc[i][j])) / (dy * dy)));
+
+                        Cn = ((((Uc[i][j][0] * ((vc[i][j] + vc[i + 1][j]) / 2.0))) - ((Uc[i][j][1] * ((vc[i][j] + vc[i - 1][j]) / 2.0)))) / dx) +
+                             ((((Vc[i][j][0] * ((vc[i][j] + vc[i][j + 1]) / 2.0))) - ((Vc[i][j][1] * ((vc[i][j] + vc[i][j - 1]) / 2.0)))) / dy);
+
+                        a1 = ((1.0 / dt) + ((2.0 / (pow(dx, 2) * Re * 2)) + (2.0 / (pow(dy, 2) * 2 * Re))));
+                        b1 = (-1.0 / (pow(dx, 2) * Re * 2));
+                        c1 = (-1.0 / (pow(dx, 2) * Re * 2));
+                        d1 = (-1.0 / (pow(dy, 2) * Re * 2));
+                        e1 = (-1.0 / (pow(dy, 2) * Re * 2));
+
+                        F = ((D - 2.0 * Cn) / 2) + (vc[i][j] / dt);
+
+                        // Update u at (i,j)
+                        v_temp[i][j] = v[i][j];
+                        v[i][j] = (F - v[i + 1][j] * b1 - v[i - 1][j] * c1 - v[i][j + 1] * d1 - v[i][j - 1] * e1) / a1;
+
+                        // Compute error at (i,j)
+                        err[i][j] = fabs(v[i][j] - v_temp[i][j]);
+                    }
+                } // End loop over interior cells
+            }
+
+            else
+            {
+
+                // Update ghost cell values for v at every iteration.
+                for (int i = 1; i <= m; i++)
+                {
+
+                    // top boundary
+                    u[i][m + 1] = 2.0 - u[i][m];
+                    v[i][m + 1] = -v[i][m];
+                    // bottom boundary
+                    u[i][0] = -u[i][1];
+                    v[i][0] = -v[i][1];
+
+                    // right boundary
+                    u[0][i] = -u[1][i];
+                    v[0][i] = -v[1][i];
+
+                    // left boundary
+                    u[m + 1][i] = -u[m][i];
+                    v[m + 1][i] = -v[m][i];
+                }
+
+                for (int i = 1; i <= m; i++)
+                {
+                    for (int j = 1; j <= m; j++)
+                    {
+                        // Compute discretization terms.
+                        double a1, b1, c1, d1, e1, F, Cno, Cn, D, v_temp[m + 1][m + 1];
+
+                        D = (1.0 / Re) * (((vc[i - 1][j] + vc[i + 1][j] - (2.0 * vc[i][j])) / (dx * dx)) + ((vc[i][j - 1] + vc[i][j + 1] - (2.0 * vc[i][j])) / (dy * dy)));
+
+                        Cn = ((((Uc[i][j][0] * ((vc[i][j] + vc[i + 1][j]) / 2.0))) - ((Uc[i][j][1] * ((vc[i][j] + vc[i - 1][j]) / 2.0)))) / dx) +
+                             ((((Vc[i][j][0] * ((vc[i][j] + vc[i][j + 1]) / 2.0))) - ((Vc[i][j][1] * ((vc[i][j] + vc[i][j - 1]) / 2.0)))) / dy);
+
+                        Cno = ((((Uo[i][j][0] * ((vo[i][j] + vo[i + 1][j]) / 2.0))) - ((Uo[i][j][1] * ((vo[i][j] + vo[i - 1][j]) / 2.0)))) / dx) +
+                              ((((Vo[i][j][0] * ((vo[i][j] + vo[i][j + 1]) / 2.0))) - ((Vo[i][j][1] * ((vo[i][j] + vo[i][j - 1]) / 2.0)))) / dy);
+
+                        a1 = ((1.0 / dt) + ((2.0 / (pow(dx, 2) * Re * 2)) + (2.0 / (pow(dy, 2) * 2 * Re))));
+                        b1 = (-1.0 / (pow(dx, 2) * Re * 2));
+                        c1 = (-1.0 / (pow(dx, 2) * Re * 2));
+                        d1 = (-1.0 / (pow(dy, 2) * Re * 2));
+                        e1 = (-1.0 / (pow(dy, 2) * Re * 2));
+
+                        F = ((D - (3.0 * Cn) + Cno) / 2) + (vc[i][j] / dt);
+
+                        // Update u at (i,j)
+                        v_temp[i][j] = v[i][j];
+                        v[i][j] = (F - v[i + 1][j] * b1 - v[i - 1][j] * c1 - v[i][j + 1] * d1 - v[i][j - 1] * e1) / a1;
+
+                        // Compute error at (i,j)
+                        err[i][j] = fabs(v[i][j] - v_temp[i][j]);
+                    }
+                }
+            }
+
+            // Update norm_inf
+            norm_inf = findMax(err);
+
+            // cout<<"check_v"<<endl;
+
+        } while (norm_inf >= E);
+
+       // ---- Update face velocities ----
+
+        for (int i = 1; i <= m; i++)
+        {
+            for (int j = 1; j <= m; j++)
+            {
+                U[i][j][0] = (u[i][j] + u[i + 1][j]) / 2; // east
+                U[i][j][1] = (u[i][j] + u[i - 1][j]) / 2; // west
+
+                V[i][j][0] = (v[i][j] + v[i][j + 1]) / 2; // north
+                V[i][j][1] = (v[i][j] + v[i][j - 1]) / 2; // south
+            }
+        }
+
+        // ---- Pressure Poisson ----
+
+        do
+        {
+            for (int i = 1; i <= m; i++)
+            {
+
+                p[i][m + 1] = p[i][m]; // top boundary
+
+                p[i][0] = p[i][1]; // bottom boundary
+
+                p[0][i] = p[1][i]; // right boundary
+
+                p[m + 1][i] = p[m][i]; // left boundary
+            }
+
+            for (int i = 1; i <= m; i++)
+            {
+                for (int j = 1; j <= m; j++)
+                {
+                    double a1, b1, c1, d1, e1, F, w;
+                    w = 1.5;
+
+                    a1 = ((-2.0 / (pow(dx, 2))) + (-2.0 / (pow(dy, 2))));
+                    b1 = 1.0 / (pow(dx, 2));
+                    c1 = 1.0 / (pow(dx, 2));
+                    d1 = 1.0 / (pow(dy, 2));
+                    e1 = 1.0 / (pow(dy, 2));
+
+                    F = (1 / dt) * (((U[i][j][0] - U[i][j][1]) / (dx)) + ((V[i][j][0] - V[i][j][1]) / (dy)));
+
+                    pc[i][j] = p[i][j];
+
+                    p[i][j] = (F - (p[i + 1][j] * b1) - (p[i - 1][j] * c1) - (p[i][j + 1] * d1) - (p[i][j - 1] * e1)) / a1;
+                    p[i][j] = p[i][j] * w + (1 - w) * pc[i][j];
+
+                    err[i][j] = fabs(p[i][j] - pc[i][j]);
+                }
+            }
+
+            norm_inf = findMax(err);
+
+            // cout<<norm_inf<<endl;
+
+        } while (norm_inf > E);
+
+        // ---- Pressure Correction Step ----
+
+        for (int i = 1; i <= m; i++)
+        {
+            for (int j = 1; j <= m; j++)
+            {
+
+                u[i][j] = u[i][j] - ((dt * (p[i + 1][j] - p[i - 1][j]) / (2 * dx)));
+
+                U[i][j][0] = U[i][j][0] - ((dt * (p[i + 1][j] - p[i][j]) / (dx)));
+                U[i][j][1] = U[i][j][1] - ((dt * (p[i][j] - p[i - 1][j]) / (dx)));
+
+                v[i][j] = v[i][j] - ((dt * (p[i][j + 1] - p[i][j - 1]) / (2 * dx)));
+
+                V[i][j][0] = V[i][j][0] - ((dt * (p[i][j + 1] - p[i][j]) / (dx)));
+                V[i][j][1] = V[i][j][1] - ((dt * (p[i][j] - p[i][j - 1]) / (dx)));
+            }
+        }
+
+        // Update ghost cell values for u and v for n+1 time step.
+        for (int i = 1; i <= m; i++)
+        {
+
+            // top boundary
+            u[i][m + 1] = 2.0 - u[i][m];
+            v[i][m + 1] = -v[i][m];
+            // bottom boundary
+            u[i][0] = -u[i][1];
+            u[i][0] = -u[i][1];
+
+            // right boundary
+            u[0][i] = -u[1][i];
+            v[0][i] = -v[1][i];
+
+            // left boundary
+            u[m + 1][i] = -u[m][1];
+            v[m + 1][i] = -v[m][1];
+
+            p[i][m + 1] = p[i][m]; // top boundary
+
+            p[i][0] = p[i][1]; // bottom boundary
+
+            p[0][i] = p[1][i]; // right boundary
+
+            p[m + 1][i] = p[m][i]; // left boundary
+        }
+
+        // Upadate u,v,U,V for n,n-1 time step
+
+        for (int i = 0; i <= m + 1; i++)
+        {
+            for (int j = 0; j <= m + 1; j++)
+            {
+
+                uo[i][j] = uc[i][j];
+                uc[i][j] = u[i][j];
+
+                Uo[i][j][0] = Uc[i][j][0];
+                Uo[i][j][1] = Uc[i][j][1];
+                Uc[i][j][0] = U[i][j][0];
+                Uc[i][j][1] = U[i][j][1];
+
+                vo[i][j] = vc[i][j];
+                vc[i][j] = v[i][j];
+
+                Vo[i][j][0] = Vc[i][j][0];
+                Vo[i][j][1] = Vc[i][j][1];
+                Vc[i][j][0] = V[i][j][0];
+                Vc[i][j][1] = V[i][j][1];
+            }
+        }
+
+        t++;
+
+        
+        cout << "t = " << t << ", u(center) = " << u[m/2][m/2] << endl;
+        fp4 << "t = " << t << ", u(center) = " << u[m/2][m/2] << endl;
+    }
+   
+    // ---- Streamfunction Calculation ----
+
+    
+    double psi[m + 2][m + 2] = {0.0};
+
+    double maxError = 0.0;
+
+    for (int iter = 0; iter < 1000; iter++)
+    {
+        double maxError = 0.0;
+
+        for (int i = 1; i <= m; i++)
+        {
+            for (int j = 1; j <= m; j++)
+            {
+                double psi_new = 0.25 * (psi[i + 1][j] + psi[i - 1][j] + psi[i][j + 1] + psi[i][j - 1] - dx * u[i][j] + dy * v[i][j]);
+
+                maxError = max(maxError, fabs(psi_new - psi[i][j]));
+                psi[i][j] = psi_new;
+            }
+        }
+
+        if (maxError < E)
+        {
+            // cout << "PSI Converged in " << iter + 1 << " iterations." << endl;
+            break;
+        }
+    }
+
+
+    // ---- Vorticity Calculation ----
+
+
+    // Initialize vorticity matrix with zeros
+    double omega[m + 2][m + 2] = {0.0};
+
+    // Compute second derivatives using central difference scheme
+    for (int i = 1; i <= m; i++) {
+        for (int j = 1; j <= m; j++) {
+            double d2psidx2 = (psi[i][j+1] - 2 * psi[i][j] + psi[i][j-1]) / (dx * dx);
+            double d2psidy2 = (psi[i+1][j] - 2 * psi[i][j] + psi[i-1][j]) / (dy * dy);
+            omega[i][j] = d2psidx2 + d2psidy2;
+        }
+    }
+
+    // Output final results to file
+    fp1 << "VARIABLES = X, Y, U, V, PSI, OMEGA\n";
+    fp1 << "ZONE I=" << m << ", J=" << m << ", F=POINT\n";
+    for (int j = 1; j <= m; ++j)
+    {
+
+        double y = j * dy;
+        for (int i = 1; i <= m; ++i)
+        {
+
+            double x = i * dx;
+            fp1 << fixed << setprecision(9) << x << "\t\t\t" << y << "\t\t\t" << u[i][j] << "\t\t\t" << v[i][j] << "\t\t\t" << psi[i][j]  << "\t\t\t" << omega[i][j] << "\n";
+        }
+    }
+
+    fp2 << "VARIABLES = Y, U\n";
+    fp2 << "ZONE I=" << m << ", J=" << m << ", F=POINT\n";
+    for (int j = 1; j <= m; ++j)
+    {
+
+        double y = j * dy;
+          fp2 << fixed << setprecision(9) << y << "\t\t\t" << u[m/2][j] << "\n";
+        
+    }
+
+    fp3 << "VARIABLES = X, V\n";
+    fp3 << "ZONE I=" << m << ", J=" << m << ", F=POINT\n";
+    for (int i = 1; i <= m; ++i)
+    {
+
+        double x = i * dx;
+          fp2 << fixed << setprecision(9) << x << "\t\t\t" << v[i][m/2] << "\n";
+        
+    }
+}
