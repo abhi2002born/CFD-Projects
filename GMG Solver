@@ -1,0 +1,267 @@
+#include <bits/stdc++.h>
+using namespace std;
+
+#define pi 3.14157
+
+class grid
+{
+public:
+    int N;
+    vector<double> U, F, R, X, E;
+
+    grid(int n) : N(n), U(N + 2, 0.0), F(N + 2, 0.0), X(N + 2, 0.0), R(N + 2, 0.0), E(N + 2, 0.0) {}
+
+    void print();
+    void update_coordinate(const double &l);
+    void interpolate(grid &coarse_grid);
+    void restriction(grid &fine_grid);
+    void update_grid(const vector<double> &X);
+    double grid_size_dx(const double &l);
+    void pass_to_vector(grid &current_grid, vector<double> &X);
+    void correction(grid &current_grid, vector<double> &X);
+    void set_E_to_zero();
+};
+
+double grid::grid_size_dx(const double &l)
+{
+    return (l / (N + 1));
+}
+
+void grid ::set_E_to_zero()
+{
+    for (int i = 1; i <= N; i++)
+    {
+        E[i] = 0.0;
+    }
+}
+
+void grid::update_coordinate(const double &l)
+{
+    double dx = grid_size_dx(l);
+    for (int i = 0; i < N + 2; i++)
+    {
+        X[i] = dx * i;
+    }
+}
+
+void grid::print()
+{
+    for (int i = 0; i < N + 2; i++)
+    {
+        cout << fixed << i << "   " << U[i]<< endl;
+    }
+    cout << endl;
+}
+
+void grid::update_grid(const vector<double> &X)
+{
+    if (X.size() != N + 2)
+    {
+        throw runtime_error("Error: Size of input vector does not match grid size.");
+    }
+    U = X;
+}
+
+void grid::restriction(grid &fine_grid)
+{
+    for (int i = 1; i <= N; i++)
+    {
+        R[i] = (fine_grid.R[2 * i-1]+(2.0*fine_grid.R[2 * i])+fine_grid.R[2 * i+1])/4.0;
+    }
+    R[0] = 0.0;
+    R[N + 1] = 0.0;
+}
+
+void grid::interpolate(grid &coarse_grid)
+{
+    E[0] = 0.0;
+    E[N + 1] = 0.0;
+
+    for (int i = 2; i <= N; i += 2)
+    {
+        E[i] = coarse_grid.E[i / 2];
+    }
+
+    for (int i = 1; i <= N; i += 2)
+    {
+        E[i] = (E[i - 1] + E[i + 1]) / 2.0;
+    }
+}
+
+void relaxation_over_Eq1(grid &mesh, const double &domain_length, const double &sigma, double BC[2], const int &iter_v1)
+{
+    int counter = 0;
+    double h = mesh.grid_size_dx(domain_length);
+    mesh.E[0] = BC[0];
+    mesh.E[mesh.N + 1] = BC[1];
+
+    do
+    {
+        for (int i = 1; i <= mesh.N; i++)
+        {
+            mesh.E[i] = ((mesh.R[i] * h * h) + mesh.E[i + 1] + mesh.E[i - 1]) / (2 + (sigma * h * h));
+        }
+        counter++;
+    } while (counter < iter_v1);
+}
+
+void relaxation1_over_Eq1(grid &mesh, const double &domain_length, const double &sigma, double BC[2], const int &iter_v1)
+{
+    int counter = 0;
+    double h = mesh.grid_size_dx(domain_length);
+    mesh.U[0] = BC[0];
+    mesh.U[mesh.N + 1] = BC[1];
+
+    do
+    {
+        for (int i = 1; i <= mesh.N; i++)
+        {
+            mesh.U[i] = ((mesh.F[i] * h * h) + mesh.U[i + 1] + mesh.U[i - 1]) / (2 + (sigma * h * h));
+        }
+        counter++;
+    } while (counter < iter_v1);
+}
+
+
+void residue_vector(grid &mesh, const double &domain_length, const double &sigma)
+{
+    double h = mesh.grid_size_dx(domain_length);
+    for (int i = 1; i <= mesh.N; i++)
+    {
+        mesh.R[i] = (((2 + (sigma * h * h)) * mesh.E[i]) - mesh.E[i + 1] - mesh.E[i - 1]) / (h * h);
+    }
+}
+
+void residue1_vector(grid &mesh, const double &domain_length, const double &sigma)
+{
+    double h = mesh.grid_size_dx(domain_length);
+    for (int i = 1; i <= mesh.N; i++)
+    {
+        mesh.R[i] = (((2 + (sigma * h * h)) * mesh.U[i]) - mesh.U[i + 1] - mesh.U[i - 1]) / (h * h);
+    }
+}
+
+void grid::correction(grid &current_grid, vector<double> &correction_vector)
+{
+    for (int i = 1; i <= N; i++)
+    {
+        current_grid.E[i] += correction_vector[i];
+    }
+}
+
+void grid::pass_to_vector(grid &current_grid, vector<double> &passing_vector)
+{
+    for (int i = 0; i < N + 2; i++)
+    {
+        passing_vector[i] = current_grid.E[i];
+    }
+}
+
+void vcycle(vector<grid> &levels, const double &domain_length, const double &sigma, double BC[2], const int &iter_v1, const int &level_no)
+{
+
+    // level down
+    for (int i = level_no - 1; i >= 0; i--)
+    {
+        if (i == level_no - 1)
+        {
+            relaxation1_over_Eq1(levels[i], domain_length, sigma, BC, 100000); // Updates grid.U
+            residue1_vector(levels[i], domain_length, sigma);                   // Updates R
+            //levels[9].print();
+        }
+
+        else if (i != 0 && i != level_no - 1)
+        {
+            //cout<<"level "<<i<<endl;
+            levels[i].restriction(levels[i + 1]);
+            levels[i].set_E_to_zero();
+            relaxation_over_Eq1(levels[i], domain_length, sigma, BC, iter_v1); // Updates grid.U
+            residue_vector(levels[i], domain_length, sigma);                   // Updates R
+
+            //levels[i].print();
+            
+        }
+
+        else
+        {
+            levels[i].R[0] = BC[0];
+            levels[i].R[2] = BC[1];
+            relaxation_over_Eq1(levels[i], domain_length, sigma, BC, iter_v1);
+        }
+    }
+
+    // level up
+    for (int i = 1; i <= level_no - 1; i++)
+    {
+        vector<double> pass_or_correction(levels[i].N + 2, 0.0);
+
+        levels[i].pass_to_vector(levels[i], pass_or_correction); // passing the grid to temp array
+        levels[i].interpolate(levels[i - 1]);                    // Interpolating data to finer level (i) from course grid (i+1)
+
+        levels[i].set_E_to_zero();
+        relaxation_over_Eq1(levels[i], domain_length, sigma, BC, iter_v1); // Updates grid.U
+
+        levels[i].correction(levels[i], pass_or_correction); // correction in data (adding the two to update the level)
+
+        // Now relaxation to remove to discretization error
+    }
+
+     for(int i=1;i<=levels[level_no-1].N;i++)
+     {
+         levels[level_no-1].U[i]=levels[level_no-1].U[i]+levels[level_no-1].E[i];
+     }
+}
+
+// apply bring down to coursest
+// do while start with first climb to one higher level and then apply v cycle
+// In v cycle we have to apply a method to add a level control feature which will tell the function ehich level we are at
+// and use it to set U (initial guess) as zero and our for loop will work on the ionput level
+void GMG(vector<grid> &levels, const double &domain_length, const double &sigma, double BC[2], const int &iter_v1, const int &level_no)
+{
+
+    // bring down to coursest grid
+    levels[0].R[0] = BC[0];
+    levels[0].R[2] = BC[1];
+    relaxation_over_Eq1(levels[0], domain_length, sigma, BC, iter_v1);
+    int i = 1;
+
+    do
+    {
+        // climb to one finer level
+        levels[i].interpolate(levels[i - 1]);
+        i++;
+        vcycle(levels, domain_length, sigma, BC, iter_v1, i + 1);
+    } while (i < level_no - 1);
+}
+
+int main()
+{
+    double domain_length = 1.0;
+    double sigma = 0.0;
+    double BC[2] = {0.0, 0.0};
+    int iter_v1 = 2;
+    double k = 1, c = pow((pi * k), 2) + sigma;
+    int level_no = 10;
+    vector<grid> levels;
+
+    for (int i = 0; i < level_no; i++)
+    {
+        grid temp(pow(2.0, i)); // i=0,1,2,3,4,5,6,7,8,9           &   N=1,2,4,8,16,32,64,256,512
+        temp.update_coordinate(domain_length);
+        levels.push_back(temp);
+    }
+
+    for (int i = 1; i < levels[level_no - 1].N; i++)
+    {
+        levels[level_no - 1].F[i] = c * sin(pi * k * (levels[level_no - 1].X[i]));
+    }
+
+    //vcycle(levels, domain_length, sigma, BC, iter_v1, level_no);
+    
+     for (int i = 0; i < 15; i++)
+    {
+         GMG(levels, domain_length, sigma, BC, iter_v1, level_no);
+     }
+    levels[9].print();
+    return 0;
+}
